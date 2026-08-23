@@ -1,0 +1,32 @@
+project_dir = /path/to/integrad-showcase
+data_dir = /path/to/large-storage/integrad-showcase
+campaign = ig-v1
+
+universe = docker
+docker_image = pytorch/pytorch:2.2.2-cuda11.8-cudnn8-runtime
+initialdir = $(project_dir)
+executable = $(project_dir)/condor/run.sh
+arguments = -m experiments.vision $(project_dir)/inputs/vision/$(image) --baseline $(baseline) --output $(data_dir)/runs/$(campaign)/vision/$(sample)/$(baseline) --batch-size 16
+environment = "PROJECT_DIR=$(project_dir) DATA_DIR=$(data_dir) VENV=$(data_dir)/venvs/integrad-showcase REQUIRE_CUDA=1"
+should_transfer_files = NO
+getenv = HOME
++WantGPUHomeMounted = true
+
+output = $(data_dir)/logs/vision.$(ClusterId).$(ProcId).out
+error = $(data_dir)/logs/vision.$(ClusterId).$(ProcId).err
+log = $(data_dir)/logs/vision.$(ClusterId).$(ProcId).log
+
+request_cpus = 4
+request_memory = 16G
+request_disk = 10G
+request_gpus = 1
+requirements = (GPUs_GlobalMemoryMb >= 12000)
+
+queue sample, image, baseline from (
+    school-bus 700a04c5c2ca6e80.jpg black
+    school-bus 700a04c5c2ca6e80.jpg blur
+    dog 1e626579f6ad7b2b.jpg black
+    dog 1e626579f6ad7b2b.jpg blur
+    baboon 023d8b91c64faf4b.jpg black
+    baboon 023d8b91c64faf4b.jpg blur
+)
