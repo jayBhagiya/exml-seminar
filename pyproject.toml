@@ -4,12 +4,13 @@ version = "0.1.0"
 description = "Minimal PyTorch implementation of Integrated Gradients"
 requires-python = ">=3.11"
 dependencies = [
+    "numpy>=1.26,<2",
     "torch>=2.2,<2.3",
 ]
 
 [project.optional-dependencies]
 vision = ["pillow>=12", "torchvision>=0.17,<0.18"]
-text = ["transformers>=4.55"]
+text = ["transformers>=4.55,<5"]
 graph = ["rdkit>=2026.3", "scikit-learn>=1.9", "torch-geometric>=2.8"]
 
 [build-system]
