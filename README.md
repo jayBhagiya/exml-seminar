@@ -1,77 +1,124 @@
 # Integrated Gradients Across Modalities
 
-Minimal PyTorch implementation of [Integrated Gradients](https://proceedings.mlr.press/v70/sundararajan17a.html) for image, text, and molecular-graph classifiers.
+A minimal PyTorch implementation of [Integrated Gradients](https://proceedings.mlr.press/v70/sundararajan17a.html), applied to three kinds of classifier with the same attribution code:
 
-## Features
+- **Images:** a pretrained ResNet-50 (ImageNet)
+- **Text:** DistilBERT fine-tuned for sentiment (SST-2)
+- **Molecular graphs:** a small GIN trained here on BBBP (blood–brain-barrier permeability)
 
-- Batched trapezoidal path integration
-- Adaptive step count with completeness checks
-- Logit, probability, and class-margin targets
-- ResNet-50 image, DistilBERT sentiment, and GIN molecular examples
-- Compact JSON exports for visualization
+Written for the *Explainable Machine Learning* seminar at Saarland University. The findings are in the [project write-up](https://jaybhagiya.me/projects/integrated-gradients-across-modalities/).
+
+## What the implementation does
+
+- Integrates gradients along the straight path from a baseline to the input with the trapezoidal rule, in batches.
+- Checks **completeness**: the attributions must sum to the score difference between input and baseline. If the residual is above tolerance, the step count doubles until it passes or reaches `--max-steps`.
+- Explains three scores: the raw **logit**, the softmax **probability**, and the **margin** between the target class and a contrast class.
+- Supports a choice of baseline per modality: black or blurred image, zero or `[PAD]` embeddings, zero or mean atom embeddings.
+
+## Repository layout
+
+| Path | Contents |
+|---|---|
+| `integrad/` | The Integrated Gradients core and score functions |
+| `experiments/vision.py` | Image attributions for ResNet-50 |
+| `experiments/text.py` | Token attributions for DistilBERT |
+| `experiments/graph.py` | Trains the molecular GIN (`train`) and exports atom attributions (`export`) |
+| `tests/` | Unit tests for the core, including completeness checks |
+| `condor/` | HTCondor jobs for running the full campaign on a GPU cluster |
 
 ## Setup
 
-```console
-$ uv venv .venv
-$ uv pip install --python .venv/bin/python --torch-backend cpu -e ".[vision,text,graph]"
+You need [uv](https://docs.astral.sh/uv/getting-started/installation/). Python 3.11 or newer works.
+
+```bash
+git clone https://github.com/jayBhagiya/exml-seminar.git
+cd exml-seminar
+uv venv .venv
+
+# CPU only (any machine)
+uv pip install --python .venv/bin/python --torch-backend cpu -e ".[vision,text,graph]"
+
+# or pick the CUDA build that matches your GPU driver
+uv pip install --python .venv/bin/python --torch-backend auto -e ".[vision,text,graph]"
 ```
 
-Use `--torch-backend auto` on a GPU machine.
+The extras are optional: install only `vision`, `text`, or `graph` if you need one experiment. Models and the BBBP dataset download automatically on first use (about 100 MB for ResNet-50, 270 MB for DistilBERT); no accounts or tokens are needed.
 
-## Test
+## Running the experiments
 
-```console
-$ .venv/bin/python -m unittest discover -s tests -v
+Everything below runs on a laptop CPU. Each script takes `--help`, picks the GPU automatically when one is available, and writes JSON into its `--output` folder.
+
+### Text
+
+```bash
+.venv/bin/python -m experiments.text "This film is not good." --output outputs/text
 ```
 
-## Run locally
+About 15 seconds on a CPU. Add `--baseline pad` to integrate from `[PAD]` embeddings instead of zeros.
 
-```console
-$ .venv/bin/python -m experiments.vision image.jpg --output outputs/vision
-$ .venv/bin/python -m experiments.text "This film is not good." --output outputs/text
-$ .venv/bin/python -m experiments.graph train \
-    --data data/bbbp --output outputs/graph-seed-42
-$ .venv/bin/python -m experiments.graph export \
-    --data data/bbbp --checkpoint outputs/graph-seed-42/model.pt \
-    --index 0 --output outputs/graph-example
+### Images
+
+Use any JPG or PNG photo:
+
+```bash
+.venv/bin/python -m experiments.vision path/to/photo.jpg --output outputs/vision --baseline blur
 ```
 
-Exporters write attribution values, baseline and target metadata, integration steps, and completeness error as JSON.
+About 2–3 minutes on a CPU. Baselines are `black` (default), `blur`, or `reference` with `--reference-image`.
 
-## HTCondor campaign
+### Molecular graphs
 
-Submit files use Docker and a shared filesystem. Set project and data locations before submission:
+Train the GIN first, then explain individual molecules with the checkpoint:
 
-```console
-$ export IG_PROJECT_DIR="$(pwd -P)"
-$ export IG_DATA_DIR="${SCRATCH:-$HOME}/integrad-showcase"
-$ mkdir -p "$IG_DATA_DIR/logs" "$IG_PROJECT_DIR/inputs/vision"
+```bash
+.venv/bin/python -m experiments.graph train --data data/bbbp --output outputs/graph-seed-42
+
+.venv/bin/python -m experiments.graph export --data data/bbbp \
+  --checkpoint outputs/graph-seed-42/model.pt --index 802 --output outputs/graph-example
 ```
 
-Add three JPG files to `inputs/vision/`. Update filenames in `condor/vision.sub` when using different images.
+Training runs up to 100 epochs with early stopping and takes a few minutes on a CPU. `--index` selects a molecule from BBBP (index 802 is one of the molecules the cluster campaign explains); `--baseline mean` integrates from the mean training-set atom embedding instead of zeros.
 
-Create the CUDA environment and warm model caches:
+### Outputs
 
-```console
-$ condor_submit -batch-name ig-setup condor/setup.sub
-$ condor_q
+Each run writes one file per explained score (`logit.json`, `probability.json`, `margin.json`) and a `summary.json`. Every score file holds the per-feature attributions, the baseline and target, the number of integration steps, and the completeness residual. Image runs also save the preprocessed `input.png` and `baseline.png`; graph training saves `model.pt` and its validation and test metrics.
+
+## Running on an HTCondor cluster
+
+`condor/` runs the full campaign as cluster jobs inside the `pytorch/pytorch:2.2.2-cuda11.8-cudnn8-runtime` Docker image: 6 image jobs, 12 text jobs, 3 graph-training seeds, and 16 graph exports. A setup job installs uv and a CUDA environment once into shared storage and pre-downloads the models and dataset; every other job reuses it.
+
+**1. Edit the variables at the top of each `.sub` file:**
+
+| Variable | Set it to |
+|---|---|
+| `project_dir` | Where this repository is cloned, on a path the worker nodes can read |
+| `data_dir` | Shared storage for the environment, caches, logs, and results (plan for about 10 GB) |
+| `campaign` | Optional: the folder name for this set of runs under `data_dir/runs/` |
+
+**2. Adapt the resource lines to your cluster:**
+- `requirements` selects GPUs by memory (`GPUs_GlobalMemoryMb`). Add any extra constraints your cluster needs, such as a `UidDomain` or machine pool.
+- `+WantGPUHomeMounted = true` is a site-specific attribute that mounts the home directory in the container. Remove it if your cluster doesn't define it.
+- Your cluster must support the Docker universe. If it doesn't, switch to `universe = vanilla` and make sure the workers have Python available for `run.sh setup`.
+
+**3. Add input images.** `vision.sub` reads three photos from `project_dir/inputs/vision/`. The images used for the write-up aren't distributed with the repository, so add your own and update the `queue` list in `vision.sub` with their file names.
+
+**4. Create the log folder and submit:**
+
+```bash
+mkdir -p /path/to/large-storage/integrad-showcase/logs
+
+condor_submit -batch-name ig-setup condor/setup.sub        # once: environment, models, dataset
+condor_submit -batch-name ig-vision condor/vision.sub
+condor_submit -batch-name ig-text condor/text.sub
+condor_submit -batch-name ig-graph-train condor/graph_train.sub
+# after graph seed 42 has finished:
+condor_submit -batch-name ig-graph-export condor/graph_export.sub
 ```
 
-After setup succeeds, submit independent arrays:
+Results land in `data_dir/runs/<campaign>/` and job logs in `data_dir/logs/`.
 
-```console
-$ condor_submit -batch-name ig-vision condor/vision.sub
-$ condor_submit -batch-name ig-text condor/text.sub
-$ condor_submit -batch-name ig-graph-train condor/graph_train.sub
+## Tests
+
+```bash
+.venv/bin/python -m unittest discover -s tests -v
 ```
-
-After graph seed 42 succeeds:
-
-```console
-$ condor_submit -batch-name ig-graph-export condor/graph_export.sub
-```
-
-The campaign creates 6 vision jobs, 12 text jobs, 3 graph training jobs, and 16 graph export jobs. Results are stored under `$IG_DATA_DIR/runs/ig-v1`; logs are stored under `$IG_DATA_DIR/logs`.
-
-Cluster-specific Docker mounts and GPU requirements may require small submit-file adjustments.
